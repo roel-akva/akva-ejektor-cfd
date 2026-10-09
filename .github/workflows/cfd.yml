@@ -1,0 +1,47 @@
+name: ejektor-cfd
+on:
+  workflow_dispatch:
+    inputs:
+      kjoringer:
+        description: 'JSON-liste: [{"v":"basis","p":"0 10 20 30","n":"1.0"}]'
+        required: true
+        default: '[{"v":"basis","p":"20","n":"1.5"}]'
+      iter:
+        description: Iterasjoner per mottrykk
+        default: '3000'
+
+jobs:
+  cfd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        k: ${{ fromJSON(inputs.kjoringer) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer OpenFOAM og gmsh
+        run: |
+          curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
+          PKG=$(apt-cache search --names-only '^openfoam2[0-9]{3}-default$' | sort | tail -1 | cut -d' ' -f1)
+          echo "Bruker $PKG"
+          sudo apt-get install -y "$PKG" libglu1-mesa libxcursor1 libxinerama1 libxft2 libxrender1
+          echo "OF_DIR=/usr/lib/openfoam/${PKG%-default}" >> "$GITHUB_ENV"
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install --quiet gmsh numpy
+      - name: Kjør
+        run: |
+          set +e
+          source "$OF_DIR/etc/bashrc"
+          set -e
+          /tmp/v/bin/python of_ejektor.py --kjoring "${{ matrix.k.v }}" --put "${{ matrix.k.p }}" \
+            --nett "${{ matrix.k.n }}" --np 4 --iter "${{ inputs.iter }}" --ut ut
+      - name: Ta med logger ved feil
+        if: failure()
+        run: mkdir -p ut && cp -r run_*/log.* ut/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: res-${{ matrix.k.v }}-n${{ matrix.k.n }}
+          path: ut/
+          retention-days: 14
