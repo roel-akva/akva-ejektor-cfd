@@ -138,7 +138,7 @@ def felt(case, navn, kl, dim, intern, bc):
           "    front { type wedge; }\n    back { type wedge; }\n}\n")
 
 
-def sett_opp(case, p, pout_kpa, m, n_iter, np_):
+def sett_opp(case, p, pout_kpa, m, n_iter, np_, robust=False):
     v_drive = p["Qd"] / 60000 / (math.pi * (0.0368 ** 2 - (R_AKSE * 1e-3) ** 2))
     pk = pout_kpa * 1000 / RHO
     felt(case, "U", "volVectorField", "[0 1 -1 0 0 0 0]", "(0 0 0)", {
@@ -214,12 +214,15 @@ runTimeModifiable true;
 functions
 {{{fo}}}
 """)
-    skriv(f"{case}/system/fvSchemes", "dictionary", "fvSchemes", """ddtSchemes { default steadyState; }
-gradSchemes { default Gauss linear; grad(U) cellLimited Gauss linear 1; grad(k) cellLimited Gauss linear 1;
-              grad(omega) cellLimited Gauss linear 1; }
-divSchemes { default none; div(phi,U) bounded Gauss linearUpwind grad(U);
-             div(phi,k) bounded Gauss limitedLinear 1; div(phi,omega) bounded Gauss limitedLinear 1;
-             div((nuEff*dev2(T(grad(U))))) Gauss linear; }
+    # robust: oppstrøms for k og ω og lavere relaksasjon. Brukt der standard
+    # divergerte i ω (V4, V6 09.10.2026); basis kjøres også slik for å måle effekten.
+    turb = "bounded Gauss upwind" if robust else "bounded Gauss limitedLinear 1"
+    skriv(f"{case}/system/fvSchemes", "dictionary", "fvSchemes", f"""ddtSchemes {{ default steadyState; }}
+gradSchemes {{ default Gauss linear; grad(U) cellLimited Gauss linear 1; grad(k) cellLimited Gauss linear 1;
+              grad(omega) cellLimited Gauss linear 1; }}
+divSchemes {{ default none; div(phi,U) bounded Gauss linearUpwind grad(U);
+             div(phi,k) {turb}; div(phi,omega) {turb};
+             div((nuEff*dev2(T(grad(U))))) Gauss linear; }}""" + """
 laplacianSchemes { default Gauss linear limited corrected 0.5; }
 interpolationSchemes { default linear; }
 snGradSchemes { default limited corrected 0.5; }
@@ -236,8 +239,8 @@ SIMPLE
     consistent yes;
     residualControl { p 2e-6; U 1e-7; "(k|omega)" 1e-6; }
 }
-relaxationFactors { equations { U 0.8; ".*" 0.6; } fields { p 0.9; } }
-""")
+relaxationFactors { equations { U RU; ".*" RT; } fields { p 0.9; } }
+""".replace("RU", "0.7" if robust else "0.8").replace("RT", "0.5" if robust else "0.6"))
     skriv(f"{case}/system/decomposeParDict", "dictionary", "decomposeParDict",
           f"numberOfSubdomains {np_};\nmethod scotch;\n")
 
@@ -338,14 +341,16 @@ def main():
     a.add_argument("--np", type=int, default=4)
     a.add_argument("--iter", type=int, default=3000)
     a.add_argument("--ut", default="ut")
+    a.add_argument("--robust", default="", help="'1' = oppstrøms k/ω og lavere relaksasjon")
     g = a.parse_args()
-    p = dict(BASIS, **VARIANTER[g.kjoring], navn=g.kjoring)
-    case = f"run_{g.kjoring}_n{g.nett:g}"
+    navn = g.kjoring + ("_R" if g.robust == "1" else "")
+    p = dict(BASIS, **VARIANTER[g.kjoring], navn=navn)
+    case = f"run_{navn}_n{g.nett:g}"
     shutil.rmtree(case, ignore_errors=True)
     os.makedirs(case)
     celler, m = lag_nett(p, g.nett, f"{case}/mesh.msh")
     putliste = [float(t) for t in g.put.split()]
-    sett_opp(case, p, putliste[0], m, g.iter, g.np)
+    sett_opp(case, p, putliste[0], m, g.iter, g.np, robust=g.robust == "1")
     sh("gmshToFoam mesh.msh", case, "log.gmshToFoam")
     fiks_boundary(case)
     sh("checkMesh", case, "log.checkMesh")
@@ -390,7 +395,7 @@ def main():
         shutil.copytree(f"{case}/postProcessing", f"{mal}/postProcessing", dirs_exist_ok=True)
         for lg in glob.glob(f"{case}/log.*"):
             shutil.copy(lg, mal)
-    with open(f"{g.ut}/resultat_{g.kjoring}_n{g.nett:g}.json", "w") as fh:
+    with open(f"{g.ut}/resultat_{navn}_n{g.nett:g}.json", "w") as fh:
         json.dump(resultater, fh, indent=1, ensure_ascii=False)
 
 
