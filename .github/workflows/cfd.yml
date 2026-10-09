@@ -35,13 +35,13 @@ jobs:
           source "$OF_DIR/etc/bashrc"
           set -e
           /tmp/v/bin/python of_ejektor.py --kjoring "${{ matrix.k.v }}" --put "${{ matrix.k.p }}" \
-            --nett "${{ matrix.k.n }}" --np 4 --iter "${{ inputs.iter }}" --ut ut
+            --nett "${{ matrix.k.n }}" --np 4 --iter "${{ inputs.iter }}" --ut ut --robust "${{ matrix.k.r }}"
       - name: Ta med logger ved feil
         if: failure()
         run: mkdir -p ut && cp -r run_*/log.* ut/ 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: res-${{ matrix.k.v }}-p${{ matrix.k.p }}-n${{ matrix.k.n }}
+          name: res-${{ matrix.k.v }}-p${{ matrix.k.p }}-n${{ matrix.k.n }}-r${{ matrix.k.r }}
           path: ut/
           retention-days: 14
