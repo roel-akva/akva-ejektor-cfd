@@ -236,7 +236,7 @@ SIMPLE
     consistent yes;
     residualControl { p 2e-6; U 1e-7; "(k|omega)" 1e-6; }
 }
-relaxationFactors { equations { U 0.9; ".*" 0.8; } fields { p 1; } }
+relaxationFactors { equations { U 0.8; ".*" 0.6; } fields { p 0.9; } }
 """)
     skriv(f"{case}/system/decomposeParDict", "dictionary", "decomposeParDict",
           f"numberOfSubdomains {np_};\nmethod scotch;\n")
