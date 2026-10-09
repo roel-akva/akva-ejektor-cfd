@@ -39,6 +39,7 @@ VARIANTER = {
     "V6": dict(diff_v=6.0),
     "V7": dict(hals_xD=5.0),
     "V8": dict(Qd=550.0),
+    "V9": dict(avrund=True),
 }
 
 
@@ -46,6 +47,10 @@ def geometri(p):
     dx, rin, rut = p["dx"], p["dn"] / 2, 16.0
     rsp = min(rut, rin + 1.5)
     li = [(X_INN, 36.8), (151, 36.8), (191, 25.7), (281, 25.7), (311, rin), (331, rin)]
+    if p.get("avrund"):
+        # V9: avrundet overgang konus -> rett parti (skarpt hjørne ga kavitasjon i basis)
+        helning = (25.7 - rin) / 30.0
+        li[4:5] = [(303, rin + 8 * helning), (308, rin + 0.9), (313, rin + 0.15), (318, rin)]
     lu = [(331, rsp), (328, rut), (311, rut), (281, 31.5), (191, 31.5), (151, 45.0), (X_INN, 45.0)]
     li = [(x + dx if x > X_INN else x, r) for x, r in li]
     lu = [(x + dx if x > X_INN else x, r) for x, r in lu]
@@ -231,7 +236,7 @@ SIMPLE
     consistent yes;
     residualControl { p 2e-6; U 1e-7; "(k|omega)" 1e-6; }
 }
-relaxationFactors { equations { U 0.8; ".*" 0.6; } fields { p 0.9; } }
+relaxationFactors { equations { U 0.9; ".*" 0.8; } fields { p 1; } }
 """)
     skriv(f"{case}/system/decomposeParDict", "dictionary", "decomposeParDict",
           f"numberOfSubdomains {np_};\nmethod scotch;\n")
@@ -277,38 +282,45 @@ def les_sett(case, navn):
     return rad
 
 
-def etterbehandle(case, p, pout_kpa, m, celler):
+def fra_logg(logg, monster, n=1):
+    """Siste verdi (og verdien n linjer før) av et funksjonsobjekt i solverloggen.
+    Loggen er sikrere enn .dat-filene, der kolonner mangler før feltet finnes."""
+    tall = r"(-?\d+\.?\d*(?:[eE][-+]?\d+)?)"
+    funn = re.findall(monster + r"\s*=\s*" + tall, logg)
+    return [float(v) for v in funn]
+
+
+def etterbehandle(case, p, pout_kpa, m, celler, loggfil):
     fak = 360.0 / KILE * 60000          # m³/s i kilen -> l/min hel
-    pp = f"{case}/postProcessing"
-    qd = float(siste_linje(f"{pp}/strom/*/surfaceFieldValue.dat")[1]) * fak
-    qs = float(siste_linje(f"{pp}/stromSug/*/surfaceFieldValue.dat")[1]) * fak
-    qu = float(siste_linje(f"{pp}/stromUt/*/surfaceFieldValue.dat")[1]) * fak
-    pdr = siste_linje(f"{pp}/pDrive/*/surfaceFieldValue.dat")
-    pdi = siste_linje(f"{pp}/pDiff/*/surfaceFieldValue.dat")
-    pha = siste_linje(f"{pp}/pHals/*/surfaceFieldValue.dat")
-    p_drive = float(pdr[2]) * RHO / 1000
-    pt_drive = float(pdr[3]) * RHO / 1000
-    mm = None
-    for fil in glob.glob(f"{pp}/minmax/*/fieldMinMax.dat"):
-        mm = fil
+    with open(os.path.join(case, loggfil)) as fh:
+        logg = fh.read()
+    qd_l = fra_logg(logg, r"sum\(drive\) of phi")
+    qs_l = fra_logg(logg, r"sum\(suction\) of phi")
+    qu = fra_logg(logg, r"sum\(outlet\) of phi")[-1] * fak
+    qd, qs = -qd_l[-1] * fak, -qs_l[-1] * fak
+    # endring i sug over de siste ~500 iterasjonene (25 utskrifter à 20)
+    qs_endr = 100 * (qs_l[-1] - qs_l[-26]) / qs_l[-1] if len(qs_l) > 26 else None
+    p_drive = fra_logg(logg, r"areaAverage\(drive\) of p")[-1] * RHO / 1000
+    pt_drive = fra_logg(logg, r"areaAverage\(drive\) of totalP")[-1] * RHO / 1000
+    p_diff = fra_logg(logg, r"areaAverage\(diffut\) of p")[-1] * RHO / 1000
+    p_hals = fra_logg(logg, r"areaAverage\(halsinn\) of p")[-1] * RHO / 1000
+    mn = re.findall(r"min\(p\) = (\S+) in cell \d+ at location \((\S+) (\S+) \S+\)", logg)
     pmin = None
-    if mm:
-        with open(mm) as fh:
-            rader = [l.split() for l in fh if l.strip() and not l.startswith("#")]
-        prad = [r for r in rader if r[1] == "p"][-1]
-        tall = [float(t) for t in re.findall(r"-?\d+\.?\d*(?:e-?\d+)?", " ".join(prad[2:]))]
-        pmin = {"p_min_kPa": round(tall[0] * RHO / 1000, 2), "x_mm": round(tall[1] * 1000, 1),
-                "r_mm": round(tall[2] * 1000, 1)}
+    if mn:
+        v, xx, yy = (float(t) for t in mn[-1])
+        pmin = {"p_min_kPa": round(v * RHO / 1000, 1), "x_mm": round(xx * 1000, 1), "r_mm": round(yy * 1000, 1),
+                "p_abs_kPa": round(v * RHO / 1000 + 101.325 + RHO * 9.81 * 2.2 / 1000, 1)}
     dv = les_sett(case, "diffvegg")
     tilbake = [r[0] for r in dv if r[1] < -1e-3]
     res = {
         "kjoring": p["navn"], "p_ut_kPa": pout_kpa, "celler": celler,
-        "Q_d_lmin": round(qd, 1), "Q_s_lmin": round(qs, 1), "Q_ut_lmin": round(-qu, 1),
-        "massebalanse_pst": round(100 * (qd + qs + qu) / max(abs(qu), 1e-9), 3),
+        "Q_d_lmin": round(qd, 1), "Q_s_lmin": round(qs, 1), "Q_ut_lmin": round(qu, 1),
+        "massebalanse_pst": round(100 * (qd + qs - qu) / max(abs(qu), 1e-9), 3),
+        "Q_s_endring_siste500_pst": round(qs_endr, 2) if qs_endr is not None else None,
         "p_drivinnlop_kPa": round(p_drive, 2), "pt_drivinnlop_kPa": round(pt_drive, 2),
-        "p_diffut_kPa": round(float(pdi[1]) * RHO / 1000, 2),
-        "p_halsinn_kPa": round(float(pha[1]) * RHO / 1000, 2),
-        "p_abs_halsinn_kPa": round(float(pha[1]) * RHO / 1000 + 101.325 + RHO * 9.81 * 2.2 / 1000, 1),
+        "p_diffut_kPa": round(p_diff, 2),
+        "p_halsinn_kPa": round(p_hals, 2),
+        "p_abs_halsinn_kPa": round(p_hals + 101.325 + RHO * 9.81 * 2.2 / 1000, 1),
         "tilbakestromning_diffusor": bool(tilbake),
         "tilbake_lengde_mm": round(1000 * (max(tilbake) - min(tilbake)), 1) if tilbake else 0.0,
         **({"p_min": pmin} if pmin else {}),
@@ -363,7 +375,7 @@ def main():
         sh(f"mpirun --oversubscribe -np {g.np} simpleFoam -parallel", case, f"log.simpleFoam_p{pout:g}")
         sh("reconstructPar -latestTime", case, "log.reconstructPar")
         sh("simpleFoam -postProcess -latestTime -func yPlus", case, "log.yPlus")
-        r = etterbehandle(case, p, pout, m, celler)
+        r = etterbehandle(case, p, pout, m, celler, f"log.simpleFoam_p{pout:g}")
         r["nettskala"] = g.nett
         resultater.append(r)
         print(json.dumps(r, ensure_ascii=False), flush=True)
